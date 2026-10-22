@@ -1,0 +1,11 @@
+# Mini GPT training settings (read by model/configuration.py)
+training:
+  learning_rate: 0.0003   # write as a decimal; PyYAML reads 3e-4 as text
+  batch_size: 32
+  max_steps: 3000
+  eval_interval: 250
+  eval_iters: 50
+  random_seed: 1337
+  train_split: 0.9
+  weight_decay: 0.1
+  grad_clip: 1.0

@@ -1,0 +1,8 @@
+# Mini GPT model settings (read by model/configuration.py)
+model:
+  context_length: 128   # characters the model can see at once
+  embedding_dim: 128    # hidden size (must divide evenly by num_heads)
+  num_heads: 4
+  num_layers: 4
+  dropout: 0.1
+  # vocab_size is NOT set here: it comes from the tokenizer at run time

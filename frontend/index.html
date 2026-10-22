@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mini GPT</title>
+  <style>
+    :root {
+      --bg: #e3eadf; --panel: #f5f8f1; --ink: #16241c; --muted: #55655b;
+      --moss: #1f3b2b; --moss-ink: #eef4e8; --rule: #b9c6b4; --err: #8c2f1f; --note: #e9efdc;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111b15; --panel: #182419; --ink: #e4ece0; --muted: #9db0a2;
+        --moss: #cfe3b4; --moss-ink: #14241a; --rule: #2e4034; --err: #ff9d87; --note: #1e2d22;
+        color-scheme: dark;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body, #root { height: 100%; margin: 0; }
+    body { background: var(--bg); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .app { display: grid; grid-template-columns: minmax(0, 1fr) 290px; height: 100%; max-width: 1150px; margin: 0 auto; }
+    .chat { display: flex; flex-direction: column; min-height: 0; padding: 18px 24px; }
+    .head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+    h1 { font-family: Georgia, "Times New Roman", serif; font-weight: 500; font-size: 1.7rem; margin: 0; }
+    .meta { color: var(--muted); font-size: 0.82rem; margin: 4px 0 10px; }
+    .banner { background: var(--note); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 12px; font-size: 0.85rem; line-height: 1.45; margin-bottom: 10px; }
+    .log { flex: 1; overflow-y: auto; padding: 6px 0; }
+    .empty { color: var(--muted); max-width: 54ch; line-height: 1.5; }
+    .msg { margin: 0 0 16px; max-width: 70ch; }
+    .msg p { margin: 0; white-space: pre-wrap; line-height: 1.55; overflow-wrap: anywhere; }
+    .msg.user { margin-left: auto; background: var(--moss); color: var(--moss-ink); padding: 9px 13px; border-radius: 14px 14px 2px 14px; max-width: 80%; }
+    .msg.assistant { border-left: 2px solid var(--rule); padding-left: 13px; font-family: Georgia, "Times New Roman", serif; font-size: 1.08rem; }
+    .msg.empty-reply p, .msg.pending p { color: var(--muted); font-style: italic; }
+    .note { color: var(--muted); font-size: 0.82rem; margin: 0 0 10px; }
+    .error { color: var(--err); margin: 0 0 10px; }
+    .composer { display: flex; gap: 10px; align-items: flex-end; padding-top: 10px; border-top: 1px solid var(--rule); }
+    textarea { flex: 1; resize: none; font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 9px 12px; }
+    button { font: inherit; font-weight: 600; cursor: pointer; background: var(--moss); color: var(--moss-ink); border: 1px solid var(--moss); border-radius: 8px; padding: 9px 18px; }
+    button.ghost { background: transparent; color: var(--ink); border-color: var(--rule); padding: 5px 11px; font-weight: 500; font-size: 0.88rem; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 3px solid var(--moss); outline-offset: 2px; }
+    .side { background: var(--panel); border-left: 1px solid var(--rule); padding: 22px 18px; overflow-y: auto; }
+    .side h2 { font-size: 0.95rem; margin: 0 0 14px; }
+    .side label.field { display: block; margin-bottom: 18px; }
+    .side .row { display: flex; justify-content: space-between; margin-bottom: 5px; font-weight: 500; font-size: 0.92rem; }
+    .side input[type="range"] { width: 100%; accent-color: var(--moss); }
+    .side input[type="number"] { width: 100%; font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--rule); border-radius: 6px; padding: 5px 8px; }
+    .side small { display: block; margin-top: 4px; color: var(--muted); line-height: 1.4; font-size: 0.8rem; }
+    .modes { display: flex; gap: 6px; margin-bottom: 18px; }
+    .modes button { flex: 1; padding: 6px 8px; font-size: 0.86rem; background: transparent; color: var(--ink); border-color: var(--rule); }
+    .modes button[aria-pressed="true"] { background: var(--moss); color: var(--moss-ink); border-color: var(--moss); }
+    @media (max-width: 800px) {
+      .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+      .side { border-left: 0; border-top: 1px solid var(--rule); max-height: 42%; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.25.6/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    const STORAGE_KEY = "mini-gpt-chat-v1";
+    const FALLBACK = { max_new_tokens: 200, temperature: 0.8, top_k: 40 };
+    const MAX_HISTORY = 12;   // messages sent back to the model in chat mode
+
+    function readSaved() {
+      try { return JSON.parse(window.localStorage.getItem(STORAGE_KEY)) || {}; }
+      catch (e) { return {}; }
+    }
+
+    async function errorText(response) {
+      let detail = null;
+      try { detail = (await response.json()).detail; } catch (e) { /* not JSON */ }
+      if (Array.isArray(detail)) return detail.map((d) => d.msg).join("; ");
+      return detail || "Server returned " + response.status;
+    }
+
+    function App() {
+      const saved = useRef(readSaved()).current;
+      const [info, setInfo] = useState(null);
+      const [infoError, setInfoError] = useState("");
+      const [messages, setMessages] = useState(saved.messages || []);
+      const [mode, setMode] = useState(saved.mode || "chat");
+      const [settings, setSettings] = useState({ ...FALLBACK, ...(saved.settings || {}) });
+      const [seed, setSeed] = useState("");
+      const [input, setInput] = useState("");
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState("");
+      const [ignored, setIgnored] = useState([]);
+      const endRef = useRef(null);
+
+      useEffect(() => {
+        fetch("api/info")
+          .then(async (r) => { if (!r.ok) throw new Error(await errorText(r)); return r.json(); })
+          .then(setInfo)
+          .catch((e) => setInfoError(String(e.message || e)));
+      }, []);
+
+      useEffect(() => {
+        try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ messages, mode, settings })); }
+        catch (e) { /* storage unavailable: chat still works */ }
+      }, [messages, mode, settings]);
+
+      useEffect(() => {
+        if (endRef.current) endRef.current.scrollIntoView({ behavior: "smooth" });
+      }, [messages, loading]);
+
+      const limits = (info && info.limits) || { max_new_tokens: [1, 500], temperature: [0, 2], top_k: [1, 65] };
+      const defaults = (info && info.defaults) || FALLBACK;
+      const set = (key) => (e) => setSettings((s) => ({ ...s, [key]: Number(e.target.value) }));
+
+      async function send() {
+        const text = input.trim();
+        if (!text || loading) return;
+        const next = [...messages, { role: "user", content: text }];
+        setMessages(next);
+        setInput("");
+        setError("");
+        setLoading(true);
+
+        const common = { ...settings };
+        if (seed !== "") common.seed = Number(seed);
+
+        try {
+          let url, body;
+          if (mode === "chat") {
+            const history = next.filter((m) => !m.placeholder).slice(-MAX_HISTORY)
+              .map((m) => ({ role: m.role, content: m.content }));
+            url = "api/chat";
+            body = { messages: history, ...common };
+          } else {
+            url = "api/generate";
+            body = { prompt: text, ...common };
+          }
+          const response = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (!response.ok) throw new Error(await errorText(response));
+          const data = await response.json();
+          const reply = mode === "chat" ? data.reply : data.text;
+          setIgnored(data.ignored_characters || []);
+          setMessages(reply
+            ? [...next, { role: "assistant", content: reply }]
+            : [...next, { role: "assistant", content: "(no reply: try again, or raise the temperature)", placeholder: true }]);
+        } catch (e) {
+          setError("Could not get a reply: " + (e.message || e));
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      function onKeyDown(e) {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+      }
+
+      const topKOn = settings.top_k !== null && settings.top_k !== undefined;
+
+      return (
+        <div className="app">
+          <main className="chat">
+            <div className="head">
+              <h1>Mini GPT</h1>
+              <button className="ghost" onClick={() => { setMessages([]); setIgnored([]); setError(""); }}
+                      disabled={!messages.length}>Clear chat</button>
+            </div>
+            <p className="meta">
+              {info
+                ? info.parameters.toLocaleString() + " parameters · context " + info.context_length +
+                  " characters · trained " + (info.checkpoint_step || 0).toLocaleString() + " steps" +
+                  (info.best_val_loss ? " · validation loss " + info.best_val_loss.toFixed(2) : "") +
+                  " · running on " + info.device
+                : infoError ? "Model not available: " + infoError : "Loading model information…"}
+            </p>
+            <div className="banner">
+              This model was trained from scratch on a small text file, so it writes in the style of
+              that text. <b>Chat</b> mode lays your messages out like a play script and shows what
+              "BOT" says next. <b>Continue</b> mode simply carries on from your text. Expect
+              Shakespeare-flavoured fragments, not answers.
+            </div>
+
+            <div className="log" aria-live="polite">
+              {messages.length === 0 && (
+                <p className="empty">Type something below and press Enter. Try "ROMEO:" in Continue mode.</p>
+              )}
+              {messages.map((m, i) => (
+                <div key={i} className={"msg " + m.role + (m.placeholder ? " empty-reply" : "")}>
+                  <p>{m.content}</p>
+                </div>
+              ))}
+              {loading && <div className="msg assistant pending"><p>Generating…</p></div>}
+              {ignored.length > 0 && (
+                <p className="note">
+                  Skipped characters the model has never seen: {ignored.map((c) => JSON.stringify(c)).join(" ")}
+                </p>
+              )}
+              {error && <p className="error" role="alert">{error}</p>}
+              <div ref={endRef} />
+            </div>
+
+            <div className="composer">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={onKeyDown}
+                placeholder="Enter sends, Shift+Enter adds a line"
+                aria-label="Your message"
+                rows={2}
+                maxLength={2000}
+              />
+              <button onClick={send} disabled={loading || !input.trim() || !info}>Send</button>
+            </div>
+          </main>
+
+          <aside className="side">
+            <h2>Mode</h2>
+            <div className="modes" role="group" aria-label="Mode">
+              <button aria-pressed={mode === "chat"} onClick={() => setMode("chat")}>Chat</button>
+              <button aria-pressed={mode === "continue"} onClick={() => setMode("continue")}>Continue</button>
+            </div>
+
+            <h2>Generation settings</h2>
+
+            <label className="field">
+              <span className="row"><span>Temperature</span><b>{settings.temperature}</b></span>
+              <input type="range" min={limits.temperature[0]} max={limits.temperature[1]} step="0.1"
+                     value={settings.temperature} onChange={set("temperature")} />
+              <small>0 always picks the likeliest character. Higher is more varied, and more garbled.</small>
+            </label>
+
+            <label className="field">
+              <span className="row">
+                <span><input type="checkbox" checked={topKOn}
+                  onChange={(e) => setSettings((s) => ({ ...s, top_k: e.target.checked ? defaults.top_k : null }))} />
+                  {" "}Top-k</span>
+                <b>{topKOn ? settings.top_k : "off"}</b>
+              </span>
+              <input type="range" min={limits.top_k[0]} max={limits.top_k[1]} step="1" disabled={!topKOn}
+                     value={topKOn ? settings.top_k : defaults.top_k} onChange={set("top_k")} />
+              <small>Only choose among the k most likely characters.</small>
+            </label>
+
+            <label className="field">
+              <span className="row"><span>Max new characters</span><b>{settings.max_new_tokens}</b></span>
+              <input type="range" min={limits.max_new_tokens[0]} max={limits.max_new_tokens[1]} step="10"
+                     value={settings.max_new_tokens} onChange={set("max_new_tokens")} />
+              <small>Longer replies take longer to generate.</small>
+            </label>
+
+            <label className="field">
+              <span className="row"><span>Seed (optional)</span></span>
+              <input type="number" min="0" placeholder="random" value={seed}
+                     onChange={(e) => setSeed(e.target.value)} />
+              <small>The same seed and settings give the same reply.</small>
+            </label>
+
+            <button className="ghost" onClick={() => { setSettings({ ...FALLBACK, ...defaults }); setSeed(""); }}>
+              Reset settings
+            </button>
+          </aside>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
